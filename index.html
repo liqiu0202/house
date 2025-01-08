@@ -82,6 +82,11 @@
   <strong>Estimated Combined Marginal Rate (Fed + NYS + NYC):</strong>
   <span id="combinedRateCell">--</span>%
 </p>
+<ul>
+  <li><strong>Federal Tax Rate:</strong> <span id="federalRateCell">--</span>%</li>
+  <li><strong>State Tax Rate:</strong> <span id="stateRateCell">--</span>%</li>
+  <li><strong>City Tax Rate:</strong> <span id="cityRateCell">--</span>%</li>
+</ul>
 
 <!-- ===== (2) BUY VS. RENT INPUTS ===== -->
 <h2>2. Buy vs. Rent Inputs</h2>
@@ -100,6 +105,9 @@
 
       <label class="input-label">Mortgage Rate (interest-only, %/yr):</label>
       <input type="number" id="mortgageRate" value="7" oninput="calculateAll()" /><br/>
+
+      <label class="input-label">Mortgage Term (years):</label>
+      <input type="number" id="mortgageTermYears" value="30" oninput="calculateAll()" /><br/>
 
       <label class="input-label">Property Tax (% of price, annual):</label>
       <input type="number" id="propertyTaxPct" value="1.0" oninput="calculateAll()" /><br/>
@@ -159,11 +167,10 @@
 
 <!-- 1) Include Chart.js via CDN -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-
 <script>
 /**
- * We’ll store a global reference to the Chart.js chart 
- * so we can destroy it before re-creating on each update.
+ * Global reference to the Chart.js chart so we can destroy and re-create it
+ * on each update.
  */
 let resultsChart = null;
 
@@ -171,56 +178,57 @@ let resultsChart = null;
  * 1) Approximate combined marginal tax rate 
  *    for MFJ in NYC, ignoring SALT caps, standard deductions, etc.
  */
-function autoComputeMarginalRate() {
+ function autoComputeMarginalRate() {
   const income = parseFloat(document.getElementById('annualIncome').value) || 0;
 
-  // ~~~~ (A) Federal (MFJ, 2023) - approximate top bracket
-  // 10%: 0-22k; 12%: 22k-89k; 22%: 89k-190.75k
-  // 24%: 190.75k-364.2k; 32%: 364.2k-462.5k
-  // 35%: 462.5k-693.75k; 37%: 693.75k+
+  // ~~~~ (A) Federal (MFJ, 2023) - approximate top bracket ~~~~
   let federalRate = 0;
-  if (income <= 22000)       federalRate = 10;
-  else if (income <= 89450)  federalRate = 12;
-  else if (income <= 190750) federalRate = 22;
-  else if (income <= 364200) federalRate = 24;
-  else if (income <= 462500) federalRate = 32;
-  else if (income <= 693750) federalRate = 35;
-  else                       federalRate = 37;
+  if      (income <= 22000)   federalRate = 10;
+  else if (income <= 89450)   federalRate = 12;
+  else if (income <= 190750)  federalRate = 22;
+  else if (income <= 364200)  federalRate = 24;
+  else if (income <= 462500)  federalRate = 32;
+  else if (income <= 693750)  federalRate = 35;
+  else                        federalRate = 37;
 
-  // ~~~~ (B) NY State (MFJ, 2023) - approximate top bracket
-  // 4% up to ~17k, 4.5% up to ~23.6k, 5.85% up to ~321k, 
-  // 6.25% up to ~2M, 6.85% up to ~5M, 9.65% beyond, etc.
+  // ~~~~ (B) NY State (MFJ, 2023) - approximate top bracket ~~~~
   let nyStateRate = 0;
-  if (income <= 17000)       nyStateRate = 4.0;
-  else if (income <= 23600)  nyStateRate = 4.5;
-  else if (income <= 321000) nyStateRate = 5.85;
-  else if (income <= 2000000)nyStateRate = 6.25;
-  else if (income <= 5000000)nyStateRate = 6.85;
-  else                       nyStateRate = 9.65;
+  if      (income <= 17000)    nyStateRate = 4.0;
+  else if (income <= 23600)    nyStateRate = 4.5;
+  else if (income <= 321000)   nyStateRate = 5.85;
+  else if (income <= 2000000)  nyStateRate = 6.25;
+  else if (income <= 5000000)  nyStateRate = 6.85;
+  else                         nyStateRate = 9.65;
 
-  // ~~~~ (C) NYC (MFJ, approximate)
-  // This is quite rough; real MFJ brackets differ slightly.
-  // We'll assume above ~90k => ~3.876
+  // ~~~~ (C) NYC (MFJ, approximate) ~~~~
   let nycRate = 0;
-  if (income <= 21600)       nycRate = 3.078;
+  if      (income <= 21600)  nycRate = 3.078;
   else if (income <= 45000)  nycRate = 3.762;
   else if (income <= 90000)  nycRate = 3.819;
   else                       nycRate = 3.876;
 
   // ~~~~ (D) Combined naive sum ~~~~
   const combinedMarginalRate = federalRate + nyStateRate + nycRate;
-  
-  // Display
+
+  // Display individual rates
+  document.getElementById('federalRateCell').textContent = federalRate.toFixed(2);
+  document.getElementById('stateRateCell').textContent   = nyStateRate.toFixed(2);
+  document.getElementById('cityRateCell').textContent    = nycRate.toFixed(2);
+
+  // Display & store combined rate
   document.getElementById('combinedRateCell').textContent = combinedMarginalRate.toFixed(2);
-  // Put in hidden input for usage in Buy vs. Rent calc
-  document.getElementById('marginalTaxBracket').value = combinedMarginalRate.toFixed(2);
+  document.getElementById('marginalTaxBracket').value     = combinedMarginalRate.toFixed(2);
 
   // Trigger the Buy vs Rent calculation
   calculateAll();
 }
 
+
 /**
- * 2) The main dynamic year-by-year Buy vs. Rent calculation
+ * 2) Main Dynamic Year-by-Year Buy vs. Rent Calculation
+ *    - Now uses a standard 30-year fixed-rate mortgage amortization
+ *    - Summation approach for property tax, insurance, maintenance
+ *    - Very simplified SALT & mortgage interest limit logic included
  */
 function calculateAll() {
   // ============== (A) Collect Inputs ==============
@@ -228,6 +236,7 @@ function calculateAll() {
   const downPaymentPct      = parseFloat(document.getElementById('downPaymentPct').value)      || 0;
   const closingCostPct      = parseFloat(document.getElementById('closingCostPct').value)      || 0;
   const mortgageRate        = parseFloat(document.getElementById('mortgageRate').value)        || 0;
+  const mortgageTermYears   = parseInt(document.getElementById('mortgageTermYears').value)     || 30;
   const propertyTaxPct      = parseFloat(document.getElementById('propertyTaxPct').value)      || 0;
   const insuranceYearly     = parseFloat(document.getElementById('insuranceYearly').value)     || 0;
   const maintenancePct      = parseFloat(document.getElementById('maintenancePct').value)      || 0;
@@ -244,78 +253,134 @@ function calculateAll() {
   const numYearsInput       = parseInt(document.getElementById('numYears').value)              || 5;
   const numYears            = (numYearsInput > 0) ? numYearsInput : 5;
 
-  // ============== (B) Initial Calculations ==============
-  const downPayment = purchasePrice * (downPaymentPct / 100);
-  const closingCost = purchasePrice * (closingCostPct / 100);
-  const loanAmount  = purchasePrice - downPayment;
+  // ============== (B) Mortgage Setup ==============
+  const downPayment  = purchasePrice * (downPaymentPct / 100);
+  const closingCost  = purchasePrice * (closingCostPct / 100);
+  const originalLoan = purchasePrice - downPayment;
 
-  // We'll do a year-by-year approach
-  // For "Buy Net Asset" each year, we pretend we SELL at year-end.
-  // For "Rent Net Asset" each year, we track rent paid plus investment growth.
+  const totalPayments     = mortgageTermYears * 12;
+  const monthlyRate       = (mortgageRate / 100) / 12;
 
-  let buyCostsSoFar  = downPayment + closingCost;  // Upfront
+  let monthlyPayment = 0;
+  if (monthlyRate > 0) {
+    // standard annuity formula
+    monthlyPayment = originalLoan * (
+      monthlyRate / (1 - Math.pow(1 + monthlyRate, -totalPayments))
+    );
+  } else {
+    // edge case: 0% interest
+    monthlyPayment = originalLoan / totalPayments;
+  }
+  console.log('monthlyrent: ' + monthlyPayment)
+  // Track the current outstanding balance as we simulate each year
+  let currentLoanBalance = originalLoan;
+
+  // House value starts at purchasePrice
   let houseValue     = purchasePrice;
+
+  // For the RENT scenario
+  let buyCostsSoFar = 0;
   let rentSoFar      = 0;
-  let investedAmount = downPayment + closingCost;  // invests that lump sum
+  let investedAmount = downPayment + closingCost; // invests that lump sum
 
-  const resultRows = [];
-
-  // We'll track the current monthly rent for each year
+  // We’ll collect year-by-year results
+  const resultRows   = [];
   let currentMonthlyRent = monthlyRent;
+
+  // If originalLoan > 750k, we’ll do a simple ratio for mortgage interest deduction
+  const maxMortgagePrincipal = 750000;
+  let mortgageDeductionRatio = 1;
+  if (originalLoan > maxMortgagePrincipal) {
+    mortgageDeductionRatio = maxMortgagePrincipal / originalLoan;
+  }
+
+  // SALT cap for property tax
+  const saltCap = 10000;
 
   // =========== (C) Loop over user-specified years ===========
   for (let year = 1; year <= numYears; year++) {
-    // ~~~~~ BUY SCENARIO FOR THIS YEAR ~~~~~
-    const annualInterest   = loanAmount * (mortgageRate / 100);
-    const annualPropertyTax = purchasePrice * (propertyTaxPct / 100);
-    const annualInsurance   = insuranceYearly;
-    const annualMaintenance = purchasePrice * (maintenancePct / 100);
 
-    const buyCostThisYear = annualInterest + annualPropertyTax + annualInsurance + annualMaintenance;
+    // ~~~~~ 1) BUY SCENARIO FOR THIS YEAR ~~~~~
+    let totalInterestThisYear = 0;
 
-    // Very naive tax savings
-    const deductible       = annualInterest + annualPropertyTax;
-    const taxSavings       = deductible * (marginalTaxBracket / 100);
+    // We'll simulate 12 monthly payments for this year
+    for (let m = 0; m < 12; m++) {
+      // monthly interest on current balance
+      const monthlyInterest   = currentLoanBalance * monthlyRate;
+      totalInterestThisYear  += monthlyInterest;
 
+      // principal portion
+      const principalPortion  = monthlyPayment - monthlyInterest;
+
+      // reduce balance
+      currentLoanBalance -= principalPortion;
+      if (currentLoanBalance < 0) {
+        currentLoanBalance = 0;
+        // If loan is fully paid off before 30 yrs, we break.
+        break;
+      }
+    }
+
+    // Non-mortgage home expenses
+    const annualPropertyTax  = purchasePrice * (propertyTaxPct / 100);
+    const annualInsurance    = insuranceYearly;
+    const annualMaintenance  = purchasePrice * (maintenancePct / 100);
+
+    // Sum of all buy costs (principal is *not* an expense, but interest is)
+    const buyCostThisYear = 
+      monthlyPayment * 12 + annualPropertyTax + annualInsurance + annualMaintenance;
+
+    // ~~~~ 2) Tax Savings (Naive) ~~~~
+    // Mortgage interest deduction (may be prorated if originalLoan > $750k)
+    const deductibleInterest = totalInterestThisYear * mortgageDeductionRatio;
+
+    // Property tax deduction (subject to SALT cap).
+    // In reality, SALT limit also includes state income tax, but simplified here.
+    const propertyTaxDeductible = Math.min(annualPropertyTax, saltCap);
+
+    const totalDeductible = deductibleInterest + propertyTaxDeductible;
+    const taxSavings      = totalDeductible * (marginalTaxBracket / 100);
+
+    // Net out-of-pocket cost for this year
     const netBuyCostThisYear = buyCostThisYear - taxSavings;
     buyCostsSoFar += netBuyCostThisYear;
 
     // House appreciates at year-end
     houseValue *= (1 + (appreciationPct / 100));
 
-    // If we sold at end of this year...
-    const sellingCost = houseValue * (sellingCostPct / 100);
-    // With interest-only, loan balance hasn't changed
-    const saleProceeds = houseValue - loanAmount - sellingCost;
-    const buyNetAsset = saleProceeds - buyCostsSoFar;
+    // If we sold at the end of this year:
+    const sellingCost  = houseValue * (sellingCostPct / 100);
+    // The outstanding loan is currentLoanBalance.
+    const saleProceeds = houseValue - currentLoanBalance - sellingCost;
+    const buyNetAsset  = saleProceeds - buyCostsSoFar;
+    console.log('houseValue:' + houseValue + ' saleProceeds:' + saleProceeds + ' currentLoanBalance:' + currentLoanBalance + ' buycost:' + buyCostsSoFar)
 
-    // ~~~~~ RENT SCENARIO FOR THIS YEAR ~~~~~
+    // ~~~~~ 3) RENT SCENARIO FOR THIS YEAR ~~~~~
     const rentThisYear = currentMonthlyRent * 12;
     rentSoFar += rentThisYear;
 
     // Investment grows
     investedAmount *= (1 + (investmentReturnPct / 100));
+
     const rentNetAsset = investedAmount - rentSoFar;
 
-    // store result
+    // Store result
     resultRows.push({
       year,
       buyNetAsset,
       rentNetAsset
     });
 
-    // increment rent for next year
+    // Next year's monthly rent
     currentMonthlyRent *= (1 + (rentIncreasePct / 100));
   }
 
   // =========== (D) Populate the Results Table ===========
   const table = document.getElementById('resultsTable');
-
   // Remove old rows except the header
   while (table.rows.length > 1) {
     table.deleteRow(1);
   }
-
   // Add new rows
   resultRows.forEach((row) => {
     const tr = table.insertRow(-1);
@@ -332,17 +397,17 @@ function calculateAll() {
   });
 
   // =========== (E) Plot the Chart ===========
-  // 1) Prepare data arrays for Chart.js
-  const labels = resultRows.map(r => `Year ${r.year}`);
+  // Prepare data arrays
+  const labels  = resultRows.map(r => `Year ${r.year}`);
   const buyData = resultRows.map(r => r.buyNetAsset.toFixed(0));
-  const rentData = resultRows.map(r => r.rentNetAsset.toFixed(0));
+  const rentData= resultRows.map(r => r.rentNetAsset.toFixed(0));
 
-  // 2) Destroy old chart if exists
+  // Destroy old chart if exists
   if (resultsChart) {
     resultsChart.destroy();
   }
 
-  // 3) Create new chart
+  // Create new chart
   const ctx = document.getElementById('resultsChart').getContext('2d');
   resultsChart = new Chart(ctx, {
     type: 'line',
@@ -352,7 +417,7 @@ function calculateAll() {
         {
           label: 'Buy Net Asset',
           data: buyData,
-          borderColor: 'rgba(75, 192, 192, 1)', // Teal
+          borderColor: 'rgba(75, 192, 192, 1)',
           backgroundColor: 'rgba(75, 192, 192, 0.2)',
           fill: false,
           tension: 0.1
@@ -360,7 +425,7 @@ function calculateAll() {
         {
           label: 'Rent Net Asset',
           data: rentData,
-          borderColor: 'rgba(255, 99, 132, 1)', // Pink/red
+          borderColor: 'rgba(255, 99, 132, 1)',
           backgroundColor: 'rgba(255, 99, 132, 0.2)',
           fill: false,
           tension: 0.1
@@ -376,7 +441,6 @@ function calculateAll() {
             text: 'Net Asset ($)'
           },
           ticks: {
-            // You can format the y-axis ticks with a callback if desired
             callback: function(value) {
               return '$' + value;
             }
@@ -393,11 +457,12 @@ function calculateAll() {
   });
 }
 
-// On page load, compute tax rate + do the buy/rent calc
+// 3) On page load, compute tax rate + run Buy vs Rent calc once
 window.onload = function() {
   autoComputeMarginalRate();
 };
 </script>
+
 
 <div class="disclaimer">
   <strong>Disclaimer:</strong>
